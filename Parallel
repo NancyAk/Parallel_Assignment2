@@ -1,0 +1,94 @@
+#include <stdio.h>
+#include <stdlib.h>
+#include <math.h>
+#include <mpi.h>
+
+void parallel_sieve(int n, int rank, int size) {
+    int sqrt_n = (int)sqrt(n); // The range we need to handle primes up to sqrt(n)
+    int low = (n / size) * rank; // Range start for each process
+    int high = (rank == size - 1) ? n : (n / size) * (rank + 1) - 1; // Range end for each process
+
+    // Allocate memory for marking numbers as prime or not
+    int *is_prime = (int *)malloc((high - low + 1) * sizeof(int));
+
+    // Initialize all numbers in the range as prime
+    for (int i = 0; i <= high - low; i++) {
+        is_prime[i] = 1;
+    }
+
+    // Sieve primes up to sqrt(n)
+    for (int p = 2; p * p <= n; p++) {
+        if (rank == 0) {
+            // Only rank 0 computes the sieve for p up to sqrt(n)
+            if (p >= low && p <= high && is_prime[p - low]) {
+                for (int multiple = p * p; multiple <= n; multiple += p) {
+                    if (multiple >= low) {
+                        is_prime[multiple - low] = 0;
+                    }
+                }
+            }
+        }
+        MPI_Bcast(&p, 1, MPI_INT, 0, MPI_COMM_WORLD); // Broadcast the prime
+        // Eliminate multiples of prime p for each process
+        for (int multiple = ((low + p - 1) / p) * p; multiple <= high; multiple += p) {
+            is_prime[multiple - low] = 0;
+        }
+    }
+
+    // Gather all results at rank 0
+    if (rank == 0) {
+        printf("Primes up to %d:\n", n);
+        for (int i = 0; i <= high - low; i++) {
+            if (is_prime[i]) {
+                printf("%d ", i + low);
+            }
+        }
+        for (int source = 1; source < size; source++) {
+            int range_low = (n / size) * source;
+            int range_high = (source == size - 1) ? n : (n / size) * (source + 1) - 1;
+            int *temp_primes = (int *)malloc((range_high - range_low + 1) * sizeof(int));
+            MPI_Recv(temp_primes, range_high - range_low + 1, MPI_INT, source, 0, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+            for (int i = 0; i <= range_high - range_low; i++) {
+                if (temp_primes[i]) {
+                    printf("%d ", i + range_low);
+                }
+            }
+            free(temp_primes);
+        }
+        printf("\n");
+    } else {
+        MPI_Send(is_prime, high - low + 1, MPI_INT, 0, 0, MPI_COMM_WORLD);
+    }
+
+    free(is_prime);
+}
+
+int main(int argc, char **argv) {
+    MPI_Init(&argc, &argv);
+
+    int rank, size;
+    MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+    MPI_Comm_size(MPI_COMM_WORLD, &size);
+
+    if (argc != 2) {
+        if (rank == 0) {
+            fprintf(stderr, "Usage: %s <n>\n", argv[0]);
+        }
+        MPI_Finalize();
+        return EXIT_FAILURE;
+    }
+
+    int n = atoi(argv[1]);
+    double start_time = MPI_Wtime();
+    
+    parallel_sieve(n, rank, size);
+
+    double end_time = MPI_Wtime();
+    if (rank == 0) {
+        double total_time = end_time - start_time;
+        printf("Total time for n = %d with %d processes: %f seconds\n", n, size, total_time);
+    }
+
+    MPI_Finalize();
+    return EXIT_SUCCESS;
+}
